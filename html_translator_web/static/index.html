@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HTML → Telugu Translator</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #f0f4f8;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 16px;
+    color: #1a2535;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 36px;
+  }
+  header h1 { font-size: 1.9rem; font-weight: 700; color: #1a5276; }
+  header p  { margin-top: 6px; color: #5d7590; font-size: 0.95rem; }
+
+  .card {
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 2px 16px rgba(0,0,0,.08);
+    width: 100%;
+    max-width: 660px;
+    overflow: hidden;
+  }
+
+  /* Tabs */
+  .tabs { display: flex; border-bottom: 2px solid #e8edf2; }
+  .tab-btn {
+    flex: 1;
+    padding: 16px;
+    border: none;
+    background: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #7f96ab;
+    cursor: pointer;
+    transition: color .2s, box-shadow .2s;
+  }
+  .tab-btn.active {
+    color: #1a5276;
+    box-shadow: inset 0 -2px 0 #1a5276;
+  }
+  .tab-btn:hover:not(.active) { color: #2e6da4; }
+
+  .panel { display: none; padding: 32px; }
+  .panel.active { display: block; }
+
+  /* Steps */
+  .step {
+    background: #f7fafc;
+    border: 1px solid #dce8f0;
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
+  }
+  .step-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #7f96ab;
+    margin-bottom: 8px;
+  }
+  .step h3 { font-size: 1rem; font-weight: 600; margin-bottom: 10px; color: #1a2535; }
+  .step p  { font-size: 0.88rem; color: #5d7590; margin-bottom: 14px; line-height: 1.55; }
+
+  /* Drop zone */
+  .drop-zone {
+    border: 2px dashed #b8d0e8;
+    border-radius: 8px;
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    position: relative;
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: #1a5276;
+    background: #eaf3fb;
+  }
+  .drop-zone input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  .drop-zone .dz-icon { font-size: 2rem; display: block; margin-bottom: 8px; }
+  .drop-zone .dz-text { font-size: 0.88rem; color: #5d7590; }
+  .drop-zone .dz-text span { color: #1a5276; font-weight: 600; }
+  .drop-zone.has-file { border-color: #27ae60; background: #f0faf4; }
+  .drop-zone.has-file .dz-text { color: #1a7340; }
+
+  /* Button */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 22px;
+    border: none; border-radius: 8px;
+    font-size: 0.92rem; font-weight: 600;
+    cursor: pointer;
+    transition: opacity .2s, transform .1s;
+  }
+  .btn:active { transform: scale(.98); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary { background: #1a5276; color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: #154360; }
+  .btn-success { background: #27ae60; color: #fff; }
+  .btn-success:hover:not(:disabled) { background: #1e8449; }
+  .btn-full { width: 100%; justify-content: center; margin-top: 4px; }
+
+  /* Progress */
+  .progress-wrap { margin-top: 16px; display: none; }
+  .progress-wrap.visible { display: block; }
+  .progress-bar-bg {
+    height: 8px; background: #dce8f0; border-radius: 99px; overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%; background: #1a5276; border-radius: 99px;
+    width: 0%; transition: width .4s ease;
+  }
+  .progress-msg { font-size: 0.82rem; color: #5d7590; margin-top: 8px; }
+
+  /* Alert */
+  .alert {
+    border-radius: 8px; padding: 12px 16px;
+    font-size: 0.88rem; margin-top: 14px; display: none;
+  }
+  .alert.visible { display: block; }
+  .alert-error   { background: #fdedec; color: #922b21; border: 1px solid #f5b7b1; }
+  .alert-success { background: #eafaf1; color: #1e8449; border: 1px solid #a9dfbf; }
+
+  .divider { border: none; border-top: 1px solid #e8edf2; margin: 8px 0 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HTML → Telugu Translator</h1>
+  <p>Translate educational HTML files to Telugu — free, no sign-up required.</p>
+</header>
+
+<div class="card">
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('auto')">⚡ Auto Translate</button>
+    <button class="tab-btn" onclick="switchTab('manual')">📋 Manual (Excel)</button>
+  </div>
+
+  <!-- AUTO TAB -->
+  <div id="tab-auto" class="panel active">
+    <div class="step">
+      <div class="step-label">Step 1 — Upload</div>
+      <h3>Upload your HTML file</h3>
+      <p>The tool will extract all English text, translate it to Telugu automatically, and return a ready-to-use HTML file.</p>
+      <div class="drop-zone" id="auto-dz" ondragover="dzOver(event,'auto-dz')" ondragleave="dzLeave('auto-dz')" ondrop="dzDrop(event,'auto-file','auto-dz')">
+        <input type="file" id="auto-file" accept=".html" onchange="fileChosen('auto-file','auto-dz','auto-name')">
+        <span class="dz-icon">📄</span>
+        <div class="dz-text"><span>Choose a file</span> or drag it here<br><small>.html only</small></div>
+      </div>
+      <p id="auto-name" style="margin-top:8px;font-size:.85rem;color:#1a7340;display:none"></p>
+    </div>
+
+    <button class="btn btn-primary btn-full" id="auto-btn" onclick="autoTranslate()" disabled>
+      ⚡ Translate to Telugu
+    </button>
+
+    <div class="progress-wrap" id="auto-progress">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="auto-bar"></div></div>
+      <div class="progress-msg" id="auto-msg">Translating...</div>
+    </div>
+    <div class="alert" id="auto-alert"></div>
+  </div>
+
+  <!-- MANUAL TAB -->
+  <div id="tab-manual" class="panel">
+
+    <div class="step">
+      <div class="step-label">Step 1 — Extract</div>
+      <h3>Upload HTML → get Excel</h3>
+      <p>Download an Excel file with all English text. Fill in the Telugu column, then come back for Step 2.</p>
+      <div class="drop-zone" id="m1-dz" ondragover="dzOver(event,'m1-dz')" ondragleave="dzLeave('m1-dz')" ondrop="dzDrop(event,'m1-file','m1-dz')">
+        <input type="file" id="m1-file" accept=".html" onchange="fileChosen('m1-file','m1-dz','m1-name')">
+        <span class="dz-icon">📄</span>
+        <div class="dz-text"><span>Choose HTML file</span> or drag here</div>
+      </div>
+      <p id="m1-name" style="margin-top:8px;font-size:.85rem;color:#1a7340;display:none"></p>
+      <button class="btn btn-primary btn-full" id="m1-btn" onclick="extractExcel()" disabled style="margin-top:14px">
+        📥 Download Excel Template
+      </button>
+      <div class="alert" id="m1-alert"></div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="step">
+      <div class="step-label">Step 2 — Apply</div>
+      <h3>Upload filled Excel + original HTML</h3>
+      <p>After filling in the Telugu column in the Excel, upload both files below to generate the translated HTML.</p>
+
+      <div class="drop-zone" id="m2-html-dz" ondragover="dzOver(event,'m2-html-dz')" ondragleave="dzLeave('m2-html-dz')" ondrop="dzDrop(event,'m2-html-file','m2-html-dz')">
+        <input type="file" id="m2-html-file" accept=".html" onchange="fileChosen('m2-html-file','m2-html-dz','m2-html-name')">
+        <span class="dz-icon">📄</span>
+        <div class="dz-text"><span>Original HTML file</span></div>
+      </div>
+      <p id="m2-html-name" style="margin-top:6px;font-size:.85rem;color:#1a7340;display:none"></p>
+
+      <div class="drop-zone" style="margin-top:12px" id="m2-xl-dz" ondragover="dzOver(event,'m2-xl-dz')" ondragleave="dzLeave('m2-xl-dz')" ondrop="dzDrop(event,'m2-xl-file','m2-xl-dz')">
+        <input type="file" id="m2-xl-file" accept=".xlsx" onchange="fileChosen('m2-xl-file','m2-xl-dz','m2-xl-name')">
+        <span class="dz-icon">📊</span>
+        <div class="dz-text"><span>Filled Excel file (.xlsx)</span></div>
+      </div>
+      <p id="m2-xl-name" style="margin-top:6px;font-size:.85rem;color:#1a7340;display:none"></p>
+
+      <button class="btn btn-success btn-full" id="m2-btn" onclick="applyExcel()" disabled style="margin-top:14px">
+        🌐 Generate Telugu HTML
+      </button>
+      <div class="alert" id="m2-alert"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ['auto','manual'][i] === name));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+  }
+
+  function dzOver(e, id)  { e.preventDefault(); document.getElementById(id).classList.add('drag-over'); }
+  function dzLeave(id)    { document.getElementById(id).classList.remove('drag-over'); }
+  function dzDrop(e, fileId, dzId) {
+    e.preventDefault();
+    dzLeave(dzId);
+    const dt = e.dataTransfer;
+    if (dt.files.length) {
+      document.getElementById(fileId).files = dt.files;
+      document.getElementById(fileId).dispatchEvent(new Event('change'));
+    }
+  }
+
+  function fileChosen(fileId, dzId, nameId) {
+    const f = document.getElementById(fileId).files[0];
+    if (!f) return;
+    const dz = document.getElementById(dzId);
+    const nm = document.getElementById(nameId);
+    dz.classList.add('has-file');
+    nm.textContent = '✓ ' + f.name;
+    nm.style.display = 'block';
+    // Enable related buttons
+    if (fileId === 'auto-file')      document.getElementById('auto-btn').disabled = false;
+    if (fileId === 'm1-file')        document.getElementById('m1-btn').disabled = false;
+    if (fileId === 'm2-html-file' || fileId === 'm2-xl-file') checkM2();
+  }
+
+  function checkM2() {
+    const h = document.getElementById('m2-html-file').files[0];
+    const x = document.getElementById('m2-xl-file').files[0];
+    document.getElementById('m2-btn').disabled = !(h && x);
+  }
+
+  function showAlert(id, msg, type) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = 'alert visible alert-' + type;
+  }
+  function hideAlert(id) { document.getElementById(id).className = 'alert'; }
+
+  function setProgress(barId, wrapId, msgId, pct, msg) {
+    document.getElementById(wrapId).classList.toggle('visible', pct >= 0);
+    if (pct >= 0) {
+      document.getElementById(barId).style.width = pct + '%';
+      document.getElementById(msgId).textContent = msg;
+    }
+  }
+
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  async function autoTranslate() {
+    const file = document.getElementById('auto-file').files[0];
+    if (!file) return;
+    const btn = document.getElementById('auto-btn');
+    btn.disabled = true;
+    hideAlert('auto-alert');
+    setProgress('auto-bar', 'auto-progress', 'auto-msg', 2, 'Uploading file...');
+
+    // Upload via fetch first, then switch to SSE for progress
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const resp = await fetch('/auto-translate', { method: 'POST', body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({detail: resp.statusText}));
+        throw new Error(err.detail || resp.statusText);
+      }
+
+      // Read SSE stream from the response body
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse complete SSE messages (separated by \n\n)
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();   // last part may be incomplete
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data:')) continue;
+          const msg = JSON.parse(line.slice(5).trim());
+
+          if (msg.type === 'start') {
+            setProgress('auto-bar', 'auto-progress', 'auto-msg', 2,
+              `Translating 0 of ${msg.total} strings...`);
+
+          } else if (msg.type === 'progress') {
+            setProgress('auto-bar', 'auto-progress', 'auto-msg', msg.pct,
+              `Translating ${msg.done} of ${msg.total} strings...`);
+
+          } else if (msg.type === 'complete') {
+            setProgress('auto-bar', 'auto-progress', 'auto-msg', 100, 'Done!');
+            // Server stored the file — just navigate to the download URL
+            const a = document.createElement('a');
+            a.href = msg.url;
+            a.download = msg.filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showAlert('auto-alert', '✓ Telugu HTML downloaded! Check your Downloads folder.', 'success');
+            btn.disabled = false;
+            return;
+
+          } else if (msg.type === 'error') {
+            throw new Error(msg.message);
+          }
+        }
+      }
+    } catch (e) {
+      setProgress('auto-bar', 'auto-progress', 'auto-msg', -1, '');
+      showAlert('auto-alert', '✗ ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function extractExcel() {
+    const file = document.getElementById('m1-file').files[0];
+    if (!file) return;
+    const btn = document.getElementById('m1-btn');
+    btn.disabled = true;
+    hideAlert('m1-alert');
+    btn.textContent = 'Extracting...';
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await fetch('/extract', { method: 'POST', body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({detail: 'Unknown error'}));
+        throw new Error(err.detail || resp.statusText);
+      }
+      const blob = await resp.blob();
+      const stem = file.name.replace(/\.html$/i, '');
+      triggerDownload(blob, stem + '_translations.xlsx');
+      showAlert('m1-alert', '✓ Excel downloaded — fill column F (Telugu Translation) then use Step 2 below.', 'success');
+    } catch (e) {
+      showAlert('m1-alert', '✗ ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '📥 Download Excel Template';
+    }
+  }
+
+  async function applyExcel() {
+    const htmlFile = document.getElementById('m2-html-file').files[0];
+    const xlFile   = document.getElementById('m2-xl-file').files[0];
+    if (!htmlFile || !xlFile) return;
+    const btn = document.getElementById('m2-btn');
+    btn.disabled = true;
+    hideAlert('m2-alert');
+    btn.textContent = 'Generating...';
+    try {
+      const fd = new FormData();
+      fd.append('html_file', htmlFile);
+      fd.append('excel_file', xlFile);
+      const resp = await fetch('/apply', { method: 'POST', body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({detail: 'Unknown error'}));
+        throw new Error(err.detail || resp.statusText);
+      }
+      const blob = await resp.blob();
+      const stem = htmlFile.name.replace(/\.html$/i, '');
+      triggerDownload(blob, stem + '_Telugu.html');
+      showAlert('m2-alert', '✓ Telugu HTML downloaded successfully!', 'success');
+    } catch (e) {
+      showAlert('m2-alert', '✗ ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🌐 Generate Telugu HTML';
+    }
+  }
+</script>
+</body>
+</html>

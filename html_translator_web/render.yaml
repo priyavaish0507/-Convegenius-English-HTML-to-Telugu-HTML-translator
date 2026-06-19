@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: html-translator
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: HF_TOKEN
+        sync: false   # you'll paste this in the Render dashboard
