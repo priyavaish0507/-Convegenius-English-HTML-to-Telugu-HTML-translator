@@ -4,6 +4,7 @@ All functions operate on strings/BytesIO — no file system access.
 """
 import re
 import io
+import json
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -302,39 +303,87 @@ def apply_narr_translations(
 
 # ─── Voice language patcher ──────────────────────────────────────────────────
 
-_VOICE_LANG_PATCHES = [
-    (
-        '/* lock to Google Hindi (hi-IN) */',
-        '/* lock to Google Telugu (te-IN) */',
-    ),
-    (
-        'if (lang.startsWith("hi-in")) s += 100;',
-        'if (lang.startsWith("te-in")) s += 100;',
-    ),
-    (
-        'else if (lang.startsWith("hi")) s += 90;',
-        'else if (lang.startsWith("te")) s += 90;',
-    ),
-]
+# Sentinel that both update_voice_language and inject_audio_clips embed, so
+# whichever runs first the second one is a no-op (prevents double-patching).
+_TELUGU_PATCH_GUARD = '/* __telugu-tts-patch__ */'
 
-# Replace the "no-else" comment with a proper else block that forces te-IN
-_LANG_FALLBACK_OLD = '} /* else: let the browser use its default LOCAL voice (reliable) */'
-_LANG_FALLBACK_NEW = ("} else {\n"
-                      "              u.lang = 'te-IN';\n"
-                      "            }")
+# Injected when there are no pre-generated audio clips (text-only path).
+# Wraps speechSynthesis.speak at the lowest level so it works regardless of
+# what the HTML calls its internal TTS helper (say, speakOne, speak, …).
+# Clears any non-Telugu voice that rankVoice() may have auto-selected, then
+# forces lang='te-IN' so the browser picks the best available Telugu voice.
+_SPEAK_LANG_PATCH = (
+    '\n<script>\n'
+    f'{_TELUGU_PATCH_GUARD}\n'
+    '(function () {\n'
+    '  if (typeof speechSynthesis === "undefined") return;\n'
+    '  const _s = speechSynthesis.speak.bind(speechSynthesis);\n'
+    '  speechSynthesis.speak = function (u) {\n'
+    '    if (u.voice && !u.voice.lang.toLowerCase().startsWith("te")) u.voice = null;\n'
+    '    u.lang = "te-IN";\n'
+    '    _s(u);\n'
+    '  };\n'
+    '})();\n'
+    '</script>'
+)
 
 
 def update_voice_language(html_content: str) -> str:
     """
-    Swap Hindi voice priority → Telugu and add an explicit te-IN fallback
-    on SpeechSynthesisUtterance when no voice is locked.
-    All replacements are no-ops if the pattern is absent (safe for future HTML variants).
+    Intercept speechSynthesis.speak to force te-IN on every utterance.
+    Works regardless of the HTML's internal function names or rankVoice logic.
+    No-op if already patched (guard comment present).
     """
-    for old, new in _VOICE_LANG_PATCHES:
-        html_content = html_content.replace(old, new, 1)
-    if "u.lang = 'te-IN'" not in html_content:
-        html_content = html_content.replace(_LANG_FALLBACK_OLD, _LANG_FALLBACK_NEW, 1)
-    return html_content
+    if _TELUGU_PATCH_GUARD in html_content:
+        return html_content
+    close_body = html_content.rfind('</body>')
+    if close_body != -1:
+        return html_content[:close_body] + _SPEAK_LANG_PATCH + '\n' + html_content[close_body:]
+    return html_content + _SPEAK_LANG_PATCH
+
+
+def inject_audio_clips(html_content: str, audio_clips: dict) -> str:
+    """
+    Inject AUDIO_CLIPS and wrap speechSynthesis.speak to play pre-generated
+    MP3s instead of browser TTS. Falls back to te-IN TTS for any clip that
+    wasn't generated. Works regardless of what the HTML calls its TTS helper.
+    Inserts a <script> tag just before </body>.
+    """
+    if not audio_clips:
+        return html_content
+
+    clips_json = json.dumps(audio_clips, ensure_ascii=False, indent=2)
+    patch_script = (
+        '\n<script>\n'
+        f'{_TELUGU_PATCH_GUARD}\n'
+        f'const AUDIO_CLIPS = {clips_json};\n'
+        '(function () {\n'
+        '  if (typeof speechSynthesis === "undefined") return;\n'
+        '  const _s = speechSynthesis.speak.bind(speechSynthesis);\n'
+        '  let _cur = null;\n'
+        '  speechSynthesis.speak = function (u) {\n'
+        '    if (_cur) { _cur.pause(); _cur.currentTime = 0; _cur = null; }\n'
+        '    const clip = AUDIO_CLIPS[u.text];\n'
+        '    if (clip) {\n'
+        '      const a = new Audio(clip);\n'
+        '      _cur = a;\n'
+        '      setTimeout(function () { if (u.onstart) u.onstart({}); }, 0);\n'
+        '      a.onended = function () { _cur = null; if (u.onend) u.onend({}); };\n'
+        '      a.onerror = function () { _cur = null; u.voice = null; u.lang = "te-IN"; _s(u); };\n'
+        '      a.play().catch(function () { _cur = null; u.voice = null; u.lang = "te-IN"; _s(u); });\n'
+        '      return;\n'
+        '    }\n'
+        '    if (u.voice && !u.voice.lang.toLowerCase().startsWith("te")) u.voice = null;\n'
+        '    u.lang = "te-IN";\n'
+        '    _s(u);\n'
+        '  };\n'
+        '})();\n'
+        '</script>'
+    )
+    close_body = html_content.rfind('</body>')
+    if close_body != -1:
+        return html_content[:close_body] + patch_script + '\n' + html_content[close_body:]
+    return html_content + patch_script
 
 
 # ─── Excel sheet writers ─────────────────────────────────────────────────────

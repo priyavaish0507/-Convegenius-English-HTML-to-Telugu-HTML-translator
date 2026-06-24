@@ -137,6 +137,33 @@
   .alert-success { background: #eafaf1; color: #1e8449; border: 1px solid #a9dfbf; }
 
   .divider { border: none; border-top: 1px solid #e8edf2; margin: 8px 0 16px; }
+
+  /* TTS API key bar */
+  .api-key-bar { border-bottom: 2px solid #e8edf2; background: #f7fafc; }
+  .api-key-toggle-btn {
+    width: 100%; padding: 11px 20px; border: none; background: none;
+    text-align: left; font-size: 0.85rem; color: #7f96ab;
+    cursor: pointer; display: flex; align-items: center; gap: 8px;
+  }
+  .api-key-toggle-btn:hover { color: #1a5276; }
+  .api-key-set   { color: #1e8449; font-weight: 600; font-size: 0.78rem; }
+  .api-key-unset { color: #aab8c5; font-size: 0.78rem; }
+  .api-chevron { margin-left: auto; font-size: 0.75rem; transition: transform .2s; }
+  .api-chevron.open { transform: rotate(180deg); }
+  .api-key-panel { padding: 0 20px 14px; }
+  .api-key-hint  { font-size: 0.82rem; color: #7f96ab; margin-bottom: 10px; }
+  .api-key-row   { display: flex; gap: 8px; }
+  .api-key-input {
+    flex: 1; padding: 9px 12px; border: 1.5px solid #b8d0e8;
+    border-radius: 6px; font-size: 0.85rem;
+    font-family: 'Courier New', monospace; color: #1a2535;
+  }
+  .api-key-input:focus { outline: none; border-color: #1a5276; box-shadow: 0 0 0 2px rgba(26,82,118,.12); }
+  .eye-btn {
+    padding: 8px 13px; border: 1.5px solid #b8d0e8; border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 0.9rem; line-height: 1;
+  }
+  .eye-btn:hover { border-color: #1a5276; }
 </style>
 </head>
 <body>
@@ -147,6 +174,24 @@
 </header>
 
 <div class="card">
+  <!-- TTS API Key (optional, collapsible) -->
+  <div class="api-key-bar">
+    <button class="api-key-toggle-btn" onclick="toggleApiKey()">
+      🔑 TTS API Key
+      <span id="api-key-status" class="api-key-unset">not set</span>
+      <span class="api-chevron" id="api-chevron">▼</span>
+    </button>
+    <div id="api-key-panel" class="api-key-panel" style="display:none">
+      <p class="api-key-hint">Required for AI-generated audio narration. Leave blank to skip audio and use browser TTS only.</p>
+      <div class="api-key-row">
+        <input type="password" id="tts-api-key" class="api-key-input"
+               placeholder="Paste your ElevenLabs API key here"
+               oninput="onApiKeyInput()">
+        <button class="eye-btn" onclick="toggleKeyVis()" title="Show / hide key">👁</button>
+      </div>
+    </div>
+  </div>
+
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('auto')">⚡ Auto Translate</button>
     <button class="tab-btn" onclick="switchTab('manual')">📋 Manual (Excel)</button>
@@ -220,6 +265,10 @@
       <button class="btn btn-success btn-full" id="m2-btn" onclick="applyExcel()" disabled style="margin-top:14px">
         🌐 Generate Telugu HTML
       </button>
+      <div class="progress-wrap" id="m2-progress">
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="m2-bar"></div></div>
+        <div class="progress-msg" id="m2-msg">Applying translations...</div>
+      </div>
       <div class="alert" id="m2-alert"></div>
     </div>
 
@@ -386,32 +435,92 @@
     }
   }
 
+  function toggleApiKey() {
+    const panel   = document.getElementById('api-key-panel');
+    const chevron = document.getElementById('api-chevron');
+    const opening = panel.style.display === 'none';
+    panel.style.display = opening ? 'block' : 'none';
+    chevron.classList.toggle('open', opening);
+  }
+  function onApiKeyInput() {
+    const val   = document.getElementById('tts-api-key').value.trim();
+    const badge = document.getElementById('api-key-status');
+    badge.textContent = val ? 'set ✓' : 'not set';
+    badge.className   = val ? 'api-key-set' : 'api-key-unset';
+  }
+  function toggleKeyVis() {
+    const inp = document.getElementById('tts-api-key');
+    inp.type  = inp.type === 'password' ? 'text' : 'password';
+  }
+
   async function applyExcel() {
     const htmlFile = document.getElementById('m2-html-file').files[0];
     const xlFile   = document.getElementById('m2-xl-file').files[0];
+    const apiKey   = document.getElementById('tts-api-key').value.trim();
     if (!htmlFile || !xlFile) return;
+
     const btn = document.getElementById('m2-btn');
     btn.disabled = true;
     hideAlert('m2-alert');
-    btn.textContent = 'Generating...';
+    setProgress('m2-bar', 'm2-progress', 'm2-msg', 2, 'Uploading files...');
+
+    const fd = new FormData();
+    fd.append('html_file', htmlFile);
+    fd.append('excel_file', xlFile);
+    fd.append('tts_api_key', apiKey);
+
     try {
-      const fd = new FormData();
-      fd.append('html_file', htmlFile);
-      fd.append('excel_file', xlFile);
       const resp = await fetch('/apply', { method: 'POST', body: fd });
       if (!resp.ok) {
-        const err = await resp.json().catch(() => ({detail: 'Unknown error'}));
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
         throw new Error(err.detail || resp.statusText);
       }
-      const blob = await resp.blob();
-      const stem = htmlFile.name.replace(/\.html$/i, '');
-      triggerDownload(blob, stem + '_Telugu.html');
-      showAlert('m2-alert', '✓ Telugu HTML downloaded successfully!', 'success');
+
+      const reader  = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data:')) continue;
+          const msg = JSON.parse(line.slice(5).trim());
+
+          if (msg.type === 'start') {
+            const label = msg.tts_total > 0
+              ? `Applying translations — then generating ${msg.tts_total} audio clips...`
+              : 'Applying translations...';
+            setProgress('m2-bar', 'm2-progress', 'm2-msg', 10, label);
+
+          } else if (msg.type === 'tts_progress') {
+            setProgress('m2-bar', 'm2-progress', 'm2-msg', msg.pct,
+              `Generating audio ${msg.done + 1} of ${msg.total}...`);
+
+          } else if (msg.type === 'complete') {
+            setProgress('m2-bar', 'm2-progress', 'm2-msg', 100, 'Done!');
+            const a = document.createElement('a');
+            a.href = msg.url; a.download = msg.filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            showAlert('m2-alert', '✓ Telugu HTML downloaded!', 'success');
+            btn.disabled = false;
+            return;
+
+          } else if (msg.type === 'error') {
+            throw new Error(msg.message);
+          }
+        }
+      }
     } catch (e) {
+      setProgress('m2-bar', 'm2-progress', 'm2-msg', -1, '');
       showAlert('m2-alert', '✗ ' + e.message, 'error');
     } finally {
       btn.disabled = false;
-      btn.textContent = '🌐 Generate Telugu HTML';
     }
   }
 </script>

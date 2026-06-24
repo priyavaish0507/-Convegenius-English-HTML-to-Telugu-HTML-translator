@@ -5,3 +5,4 @@ beautifulsoup4
 openpyxl
 requests
 deep-translator
+elevenlabs
