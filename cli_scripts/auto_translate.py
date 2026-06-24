@@ -57,6 +57,16 @@ def translate_long(text, api_key):
     return '. '.join(parts)
 
 
+# Column layout per sheet type:
+#   OST ('On-Screen Text' / 'Translate Here'): text=col E (idx 4), translation=col F (idx 5)
+#   VO  ('Narration VO'):                       text=col C (idx 2), translation=col D (idx 3)
+_SHEET_CONFIG = {
+    'On-Screen Text': {'text_col': 4, 'trans_col': 5},
+    'Translate Here': {'text_col': 4, 'trans_col': 5},
+    'Narration VO':   {'text_col': 2, 'trans_col': 3},
+}
+
+
 def main():
     if len(sys.argv) != 3:
         print('Usage: python auto_translate.py translations.xlsx <api_key>')
@@ -66,42 +76,48 @@ def main():
     api_key = sys.argv[2]
 
     wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb.active
 
-    # Count rows that need translation
-    rows_to_do = [
-        r for r in ws.iter_rows(min_row=3)
-        if r[4].value and str(r[4].value).strip()   # col E has text
-        and not (r[5].value and str(r[5].value).strip())  # col F is blank
-    ]
-    total = len(rows_to_do)
-    print(f'Translating {total} rows...\n')
+    # Collect all rows needing translation across both sheets
+    work_items = []  # (ws, row_cells, text_col, trans_col)
+    for sheet_name in wb.sheetnames:
+        cfg = _SHEET_CONFIG.get(sheet_name)
+        if cfg is None:
+            continue
+        ws = wb[sheet_name]
+        for row_cells in ws.iter_rows(min_row=3):
+            text_cell  = row_cells[cfg['text_col']]
+            trans_cell = row_cells[cfg['trans_col']]
+            if (text_cell.value and str(text_cell.value).strip()
+                    and not (trans_cell.value and str(trans_cell.value).strip())):
+                work_items.append((sheet_name, row_cells, cfg['text_col'], cfg['trans_col']))
+
+    total = len(work_items)
+    print(f'Translating {total} rows across {len(wb.sheetnames)} sheet(s)...\n')
 
     done, failed = 0, 0
-    for row_cells in rows_to_do:
-        idx = row_cells[0].value
-        text = str(row_cells[4].value).strip()   # col E — text to translate
-        row_num = row_cells[0].row
+    for sheet_name, row_cells, text_col, trans_col in work_items:
+        idx  = row_cells[0].value
+        text = str(row_cells[text_col].value).strip()
 
         try:
             telugu = translate_long(text, api_key)
-            row_cells[5].value = telugu              # col F — Telugu translation
+            row_cells[trans_col].value = telugu
             done += 1
-            print(f'  [{done}/{total}] Row {idx + 1}: {text[:45]!r}')
+            label = f'[{sheet_name}] Row {(idx or 0) + 1}'
+            print(f'  [{done}/{total}] {label}: {text[:40]!r}')
             print(f'            → {telugu[:55]}')
-            # Save every 10 rows so progress isn't lost on interruption
             if done % 10 == 0:
                 wb.save(xlsx_path)
-            time.sleep(0.2)   # gentle rate limiting
+            time.sleep(0.2)
 
         except requests.HTTPError as e:
-            print(f'  [!] Row {idx + 1} failed ({e.response.status_code}): {text[:40]!r}')
+            print(f'  [!] [{sheet_name}] Row {(idx or 0) + 1} failed ({e.response.status_code}): {text[:40]!r}')
             failed += 1
             if e.response.status_code == 429:
                 print('  Rate limited — waiting 5s...')
                 time.sleep(5)
         except Exception as e:
-            print(f'  [!] Row {idx + 1} error: {e}')
+            print(f'  [!] [{sheet_name}] error: {e}')
             failed += 1
 
     wb.save(xlsx_path)

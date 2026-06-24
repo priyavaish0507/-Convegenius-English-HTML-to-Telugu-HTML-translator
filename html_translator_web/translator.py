@@ -1,6 +1,6 @@
 """
-Core extract/apply logic — ported from the CLI scripts.
-All functions operate on strings/BytesIO, no file system access.
+Core extract/apply logic.
+All functions operate on strings/BytesIO — no file system access.
 """
 import re
 import io
@@ -27,6 +27,8 @@ _TRAIL_PAT = re.compile(
     r'([\s\U0001F000-\U0001FFFF\U00002600-\U000027FF←-⇿⌀-⏿■-◿✀-➿]*)$'
 )
 
+
+# ─── OST (on-screen text) helpers ────────────────────────────────────────────
 
 def strip_emoji(text):
     return EMOJI_RE.sub('', text).strip()
@@ -78,16 +80,267 @@ def walk_dom(soup):
                 index += 1
 
 
-def extract_to_excel(html_content: str) -> bytes:
-    """Parse HTML, extract English text, return xlsx bytes."""
-    soup = BeautifulSoup(html_content, 'html.parser')
-    records = list(walk_dom(soup))
+# ─── NARR / VO helpers ───────────────────────────────────────────────────────
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = 'Translate Here'
-    ws.sheet_properties.tabColor = '1A5276'
+def find_narr_script_text(html_content: str) -> str | None:
+    """Return the raw text content of the <script> tag containing NARR, or None."""
+    for m in re.finditer(r'<script[^>]*>(.*?)</script>', html_content,
+                         re.DOTALL | re.IGNORECASE):
+        if re.search(r'\bNARR\b', m.group(1)):
+            return m.group(1)
+    return None
 
+
+def _find_narr_script_offset(html_content: str) -> tuple[str, int] | None:
+    """Return (script_content, start_offset_in_html) for the <script> containing NARR."""
+    for m in re.finditer(r'<script[^>]*>(.*?)</script>', html_content,
+                         re.DOTALL | re.IGNORECASE):
+        if re.search(r'\bNARR\b', m.group(1)):
+            return m.group(1), m.start(1)
+    return None
+
+
+def extract_narr_literal_and_offset(script_text: str) -> tuple[str, int] | None:
+    """
+    Find 'NARR = {...}' and return (literal, start_offset_in_script_text).
+    Uses brace-counting with string-aware parsing to locate the matching '}'.
+    """
+    m = re.search(r'\bNARR\s*=\s*\{', script_text)
+    if not m:
+        return None
+
+    start = m.end() - 1   # position of the opening '{'
+    depth = 0
+    in_string = False
+    string_char = None
+    i = start
+
+    while i < len(script_text):
+        ch = script_text[i]
+        if in_string:
+            if ch == '\\' and i + 1 < len(script_text):
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+        else:
+            if ch in ('"', "'", '`'):
+                in_string = True
+                string_char = ch
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return script_text[start:i + 1], start
+        i += 1
+
+    return None
+
+
+def _collect_value_strings(narr_literal: str) -> list[str]:
+    """
+    Extract all value-position quoted strings from a JS object literal.
+    Structure-agnostic: a string is considered a key only when a ':' immediately
+    follows it (after optional whitespace) within an object context.
+    Returns decoded string values in source order.
+    """
+    results = []
+    i = 0
+    n = len(narr_literal)
+
+    while i < n:
+        ch = narr_literal[i]
+
+        if ch in ('"', "'", '`'):
+            quote_char = ch
+            i += 1
+            raw_chars = []
+            while i < n:
+                c = narr_literal[i]
+                if c == '\\' and i + 1 < n:
+                    next_c = narr_literal[i + 1]
+                    escapes = {
+                        "'": "'", '"': '"', '\\': '\\',
+                        'n': '\n', 't': '\t', 'r': '\r',
+                    }
+                    raw_chars.append(escapes.get(next_c, next_c))
+                    i += 2
+                    continue
+                if c == quote_char:
+                    break
+                raw_chars.append(c)
+                i += 1
+
+            # Look ahead: if ':' follows (with optional whitespace) it's a property key
+            j = i + 1
+            while j < n and narr_literal[j] in ' \t\n\r':
+                j += 1
+            if j < n and narr_literal[j] == ':':
+                i += 1  # skip closing quote, this is a key
+                continue
+
+            results.append(''.join(raw_chars))
+            i += 1  # skip closing quote
+            continue
+
+        i += 1
+
+    return results
+
+
+def extract_narr_records(html_content: str) -> list[tuple[int, str]]:
+    """
+    Return [(sequential_index, string_value), ...] for all narration strings
+    inside the NARR object. Completely structure-agnostic.
+    Returns [] if no NARR found.
+    """
+    script_text = find_narr_script_text(html_content)
+    if not script_text:
+        return []
+    result = extract_narr_literal_and_offset(script_text)
+    if not result:
+        return []
+    narr_literal, _ = result
+    strings = _collect_value_strings(narr_literal)
+    return list(enumerate(strings))
+
+
+def _js_escape(text: str, quote_char: str) -> str:
+    """Escape text for safe embedding inside a JS string with the given quote style."""
+    text = text.replace('\\', '\\\\')
+    text = text.replace(quote_char, '\\' + quote_char)
+    return text
+
+
+def _rebuild_narr_literal(
+    narr_literal: str,
+    translations: dict,
+    english_check: dict,
+) -> tuple[str, int]:
+    """
+    Walk narr_literal and substitute value-position strings with translations.
+    Returns (new_literal, applied_count).
+    """
+    output = []
+    value_idx = 0
+    applied = 0
+    i = 0
+    n = len(narr_literal)
+
+    while i < n:
+        ch = narr_literal[i]
+
+        if ch in ('"', "'", '`'):
+            quote_char = ch
+            end = i + 1
+            while end < n:
+                c = narr_literal[end]
+                if c == '\\' and end + 1 < n:
+                    end += 2
+                    continue
+                if c == quote_char:
+                    break
+                end += 1
+
+            # Check if this is a property key
+            j = end + 1
+            while j < n and narr_literal[j] in ' \t\n\r':
+                j += 1
+            is_key = j < n and narr_literal[j] == ':'
+
+            if is_key:
+                output.append(narr_literal[i:end + 1])
+            else:
+                if value_idx in translations:
+                    telugu = translations[value_idx]
+                    escaped = _js_escape(telugu, quote_char)
+                    output.append(f'{quote_char}{escaped}{quote_char}')
+                    applied += 1
+                else:
+                    output.append(narr_literal[i:end + 1])
+                value_idx += 1
+
+            i = end + 1
+            continue
+
+        output.append(ch)
+        i += 1
+
+    return ''.join(output), applied
+
+
+def apply_narr_translations(
+    html_content: str,
+    vo_translations: dict,
+    vo_english_check: dict,
+) -> tuple[str, int, int]:
+    """
+    Replace NARR strings in the raw HTML string (not through BeautifulSoup,
+    to avoid script-content encoding issues).
+    Returns (new_html, applied_count, total_count).
+    """
+    result = _find_narr_script_offset(html_content)
+    if not result:
+        return html_content, 0, 0
+    script_text, script_offset = result
+
+    narr_result = extract_narr_literal_and_offset(script_text)
+    if not narr_result:
+        return html_content, 0, 0
+    narr_literal, narr_start_in_script = narr_result
+
+    new_narr, applied = _rebuild_narr_literal(narr_literal, vo_translations, vo_english_check)
+
+    abs_start = script_offset + narr_start_in_script
+    abs_end = abs_start + len(narr_literal)
+    new_html = html_content[:abs_start] + new_narr + html_content[abs_end:]
+
+    total = len(vo_english_check)
+    return new_html, applied, total
+
+
+# ─── Voice language patcher ──────────────────────────────────────────────────
+
+_VOICE_LANG_PATCHES = [
+    (
+        '/* lock to Google Hindi (hi-IN) */',
+        '/* lock to Google Telugu (te-IN) */',
+    ),
+    (
+        'if (lang.startsWith("hi-in")) s += 100;',
+        'if (lang.startsWith("te-in")) s += 100;',
+    ),
+    (
+        'else if (lang.startsWith("hi")) s += 90;',
+        'else if (lang.startsWith("te")) s += 90;',
+    ),
+]
+
+# Replace the "no-else" comment with a proper else block that forces te-IN
+_LANG_FALLBACK_OLD = '} /* else: let the browser use its default LOCAL voice (reliable) */'
+_LANG_FALLBACK_NEW = ("} else {\n"
+                      "              u.lang = 'te-IN';\n"
+                      "            }")
+
+
+def update_voice_language(html_content: str) -> str:
+    """
+    Swap Hindi voice priority → Telugu and add an explicit te-IN fallback
+    on SpeechSynthesisUtterance when no voice is locked.
+    All replacements are no-ops if the pattern is absent (safe for future HTML variants).
+    """
+    for old, new in _VOICE_LANG_PATCHES:
+        html_content = html_content.replace(old, new, 1)
+    if "u.lang = 'te-IN'" not in html_content:
+        html_content = html_content.replace(_LANG_FALLBACK_OLD, _LANG_FALLBACK_NEW, 1)
+    return html_content
+
+
+# ─── Excel sheet writers ─────────────────────────────────────────────────────
+
+def _write_ost_sheet(ws, records):
+    """Write OST records into ws (already created by the caller)."""
     thin = Side(style='thin', color='CCCCCC')
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     green_border = Border(
@@ -149,34 +402,144 @@ def extract_to_excel(html_content: str) -> bytes:
     ws.column_dimensions['G'].width = 7
     ws.freeze_panes = 'E3'
 
+
+def _write_vo_sheet(ws, vo_records):
+    """Write VO narration records into ws (already created by the caller)."""
+    thin = Side(style='thin', color='CCCCCC')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    orange_border = Border(
+        left=Side(style='medium', color='E67E22'),
+        right=thin, top=thin, bottom=thin
+    )
+
+    ws.row_dimensions[1].height = 36
+    grey_font = Font(italic=True, color='555555', size=10)
+    inst = Alignment(wrap_text=True, vertical='center')
+    ws['C1'] = 'Narration text from the NARR object (voice-over). Each row is one spoken utterance.'
+    ws['D1'] = '✏ Type the Telugu narration here. These strings will be spoken aloud by the browser.'
+    for col in ['C', 'D']:
+        ws[f'{col}1'].font = grey_font
+        ws[f'{col}1'].alignment = inst
+
+    ws.row_dimensions[2].height = 24
+    header_fill = PatternFill(start_color='B7470A', end_color='B7470A', fill_type='solid')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    center = Alignment(horizontal='center', vertical='center')
+    for col, label in [('C', 'Narration to Translate'), ('D', 'Telugu Narration'), ('E', 'Row #')]:
+        c = ws[f'{col}2']
+        c.value = label
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = center
+
+    wrap_top = Alignment(wrap_text=True, vertical='top')
+    for idx, text in vo_records:
+        row = idx + 3
+        ws.cell(row=row, column=1, value=idx)    # A hidden: sequential index
+        ws.cell(row=row, column=2, value=text)   # B hidden: original English
+
+        c = ws.cell(row=row, column=3, value=text)   # C visible: English display
+        c.fill = PatternFill(start_color='FEF9E7', end_color='FEF9E7', fill_type='solid')
+        c.font = Font(color='1A252F', size=10)
+        c.alignment = wrap_top
+        c.border = border
+
+        d = ws.cell(row=row, column=4, value='')     # D visible: Telugu input
+        d.fill = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
+        d.font = Font(size=11)
+        d.alignment = wrap_top
+        d.border = orange_border
+
+        e = ws.cell(row=row, column=5, value=idx + 1)  # E visible: row number
+        e.font = Font(color='AAAAAA', size=9)
+        e.alignment = Alignment(horizontal='center', vertical='top')
+
+        ws.row_dimensions[row].height = max(18, min(80, 15 + (len(text) // 50) * 14))
+
+    ws.column_dimensions['A'].hidden = True
+    ws.column_dimensions['B'].hidden = True
+    ws.column_dimensions['C'].width = 55
+    ws.column_dimensions['D'].width = 55
+    ws.column_dimensions['E'].width = 7
+    ws.freeze_panes = 'C3'
+
+
+# ─── Public API ──────────────────────────────────────────────────────────────
+
+def extract_to_excel(html_content: str) -> bytes:
+    """
+    Parse HTML, extract OST and VO narration text.
+    Returns xlsx bytes with two sheets: 'On-Screen Text' and 'Narration VO'.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    ost_records = list(walk_dom(soup))
+    vo_records = extract_narr_records(html_content)
+
+    wb = openpyxl.Workbook()
+
+    ws_ost = wb.active
+    ws_ost.title = 'On-Screen Text'
+    ws_ost.sheet_properties.tabColor = '1A5276'
+    _write_ost_sheet(ws_ost, ost_records)
+
+    if vo_records:
+        ws_vo = wb.create_sheet('Narration VO')
+        ws_vo.sheet_properties.tabColor = 'E67E22'
+        _write_vo_sheet(ws_vo, vo_records)
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
 def load_translations_from_bytes(xlsx_bytes: bytes):
-    """Read filled Excel, return (translations dict, english_check dict)."""
+    """
+    Read filled Excel, return (ost_trans, ost_check, vo_trans, vo_check).
+    Backward compatible: old single-sheet Excel returns empty VO dicts.
+
+    ost_trans / ost_check: {int_idx: str}
+    vo_trans  / vo_check:  {int_idx: str}  (sequential index into NARR value strings)
+    """
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes))
-    ws = wb.active
-    translations = {}
-    english_check = {}
-    for row in ws.iter_rows(min_row=3, values_only=True):
+
+    # OST sheet — support both legacy name and new name
+    if 'On-Screen Text' in wb.sheetnames:
+        ost_ws = wb['On-Screen Text']
+    elif 'Translate Here' in wb.sheetnames:
+        ost_ws = wb['Translate Here']
+    else:
+        ost_ws = wb.active
+
+    ost_trans, ost_check = {}, {}
+    for row in ost_ws.iter_rows(min_row=3, values_only=True):
         if row[0] is None:
             continue
         idx = int(row[0])
-        english_orig = str(row[3] or '').strip()
+        ost_check[idx] = str(row[3] or '').strip()
         telugu = row[5]
-        english_check[idx] = english_orig
         if telugu and str(telugu).strip():
-            translations[idx] = str(telugu).strip()
-    return translations, english_check
+            ost_trans[idx] = str(telugu).strip()
+
+    vo_trans, vo_check = {}, {}
+    if 'Narration VO' in wb.sheetnames:
+        vo_ws = wb['Narration VO']
+        for row in vo_ws.iter_rows(min_row=3, values_only=True):
+            if row[0] is None:
+                continue
+            idx      = int(row[0])           # col A: sequential index
+            original = str(row[1] or '').strip()  # col B: original English
+            telugu   = row[3]                # col D: translation
+            vo_check[idx] = original
+            if telugu and str(telugu).strip():
+                vo_trans[idx] = str(telugu).strip()
+
+    return ost_trans, ost_check, vo_trans, vo_check
 
 
 def apply_translations(html_content: str, translations: dict, english_check: dict) -> tuple[str, int, int]:
-    """Apply translations to HTML, return (new_html, applied_count, total_count)."""
+    """Apply OST translations to HTML DOM. Returns (new_html, applied_count, total_count)."""
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    # First pass: collect replacements
     replacements = []
     index = 0
     seen_attr_ids = set()
@@ -205,7 +568,6 @@ def apply_translations(html_content: str, translations: dict, english_check: dic
 
     total = index
 
-    # Second pass: apply
     for node, new_text, node_type in replacements:
         if node_type == 'ATTR':
             node['data-script'] = new_text

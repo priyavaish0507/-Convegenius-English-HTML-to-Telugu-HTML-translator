@@ -9,7 +9,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from translator import (extract_to_excel, load_translations_from_bytes,
-                        apply_translations, walk_dom, strip_emoji)
+                        apply_translations, walk_dom, strip_emoji,
+                        extract_narr_records, apply_narr_translations,
+                        update_voice_language)
 from hf_translate import translate_batch
 from bs4 import BeautifulSoup
 
@@ -52,12 +54,17 @@ async def auto_translate(file: UploadFile = File(...)):
     out_filename = stem + '_Telugu.html'
 
     soup = BeautifulSoup(html, 'html.parser')
-    records = list(walk_dom(soup))
-    if not records:
+    ost_records = list(walk_dom(soup))
+    vo_records = extract_narr_records(html)   # [(idx, text), ...]
+
+    if not ost_records and not vo_records:
         raise HTTPException(400, 'No translatable text found in this HTML file')
 
-    texts = [strip_emoji(text) for _, _, _, text in records]
-    total = len(texts)
+    ost_texts = [strip_emoji(text) for _, _, _, text in ost_records]
+    vo_texts  = [text for _, text in vo_records]
+    all_texts = ost_texts + vo_texts
+    total     = len(all_texts)
+    ost_count = len(ost_texts)
 
     async def event_stream():
         loop = asyncio.get_event_loop()
@@ -69,7 +76,7 @@ async def auto_translate(file: UploadFile = File(...)):
 
         def run_translation():
             try:
-                results = translate_batch(texts, progress_cb=progress_cb)
+                results = translate_batch(all_texts, progress_cb=progress_cb)
                 loop.call_soon_threadsafe(queue.put_nowait, ('done', results))
             except Exception as e:
                 loop.call_soon_threadsafe(queue.put_nowait, ('error', str(e)))
@@ -84,15 +91,20 @@ async def auto_translate(file: UploadFile = File(...)):
                 yield f"data: {json.dumps({'type': 'progress', 'done': done, 'total': tot, 'pct': pct})}\n\n"
 
             elif msg[0] == 'done':
-                translated = msg[1]
-                translations = {}
-                english_check = {}
-                for (idx, _, _, original), telugu in zip(records, translated):
-                    translations[idx] = telugu
-                    english_check[idx] = original
-                new_html, _, _ = apply_translations(html, translations, english_check)
+                all_translated = msg[1]
+                ost_translated = all_translated[:ost_count]
+                vo_translated  = all_translated[ost_count:]
 
-                # Store result, hand browser a clean download URL
+                ost_trans = {idx: t   for (idx,_,_,_), t   in zip(ost_records, ost_translated)}
+                ost_check = {idx: orig for idx,_,_,orig    in ost_records}
+                vo_trans  = {idx: t   for (idx,_), t       in zip(vo_records, vo_translated)}
+                vo_check  = {idx: orig for idx, orig        in vo_records}
+
+                new_html, _, _ = apply_translations(html, ost_trans, ost_check)
+                if vo_trans:
+                    new_html, _, _ = apply_narr_translations(new_html, vo_trans, vo_check)
+                new_html = update_voice_language(new_html)
+
                 job_id = str(uuid.uuid4())
                 _results[job_id] = (out_filename, new_html.encode('utf-8'))
                 yield f"data: {json.dumps({'type': 'complete', 'url': f'/download/{job_id}', 'filename': out_filename})}\n\n"
@@ -135,14 +147,18 @@ async def apply(
     xlsx_bytes = await excel_file.read()
 
     try:
-        translations, english_check = load_translations_from_bytes(xlsx_bytes)
+        ost_trans, ost_check, vo_trans, vo_check = load_translations_from_bytes(xlsx_bytes)
     except Exception as e:
         raise HTTPException(400, f'Could not read Excel file: {e}')
 
-    if not translations:
-        raise HTTPException(400, 'No translations found in the Excel file — fill column F first')
+    if not ost_trans and not vo_trans:
+        raise HTTPException(400, 'No translations found in the Excel file — fill column F (OST) or column D (VO) first')
 
-    new_html, _, _ = apply_translations(html, translations, english_check)
+    new_html, _, _ = apply_translations(html, ost_trans, ost_check)
+    if vo_trans:
+        new_html, _, _ = apply_narr_translations(new_html, vo_trans, vo_check)
+    new_html = update_voice_language(new_html)
+
     stem = Path(html_file.filename).stem
     return Response(
         content=new_html.encode('utf-8'),
