@@ -54,7 +54,7 @@ def should_extract(text):
         return False
     if PURE_NUMBER_RE.match(text):
         return False
-    if len(re.findall(r'[a-zA-Z]', text)) < 3:
+    if len(re.findall(r'[a-zA-Z]', text)) < 2:
         return False
     return True
 
@@ -621,6 +621,9 @@ def apply_translations(html_content: str, translations: dict, english_check: dic
         if node_type == 'ATTR':
             node['data-script'] = new_text
         else:
-            node.replace_with(NavigableString(new_text))
+            orig = str(node)
+            lead = orig[:len(orig) - len(orig.lstrip())]
+            trail = orig[len(orig.rstrip()):]
+            node.replace_with(NavigableString(lead + new_text + trail))
 
     return str(soup), len(replacements), total
