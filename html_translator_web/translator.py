@@ -301,6 +301,43 @@ def apply_narr_translations(
     return new_html, applied, total
 
 
+# ─── playWelcome bug fix ─────────────────────────────────────────────────────
+
+def fix_play_welcome(html_content: str) -> str:
+    """
+    Fix the playWelcome first-load audio bug: some HTML templates join all
+    NARR[0].parts into a single string before calling speakOne(text, ...).
+    That joined string never matches any key in AUDIO_CLIPS (which stores
+    individual part strings), so the welcome audio silently falls back to
+    browser TTS on first load even though clips exist.
+
+    replaySlide already uses speakChain(parts, ...) correctly — this makes
+    playWelcome consistent with it.
+
+    No-op if the pattern is absent (template already correct or different).
+    """
+    # Pattern 1: remove the join line and fix the empty-check condition.
+    # Before: const text = parts.join("  ");
+    #         if (!text || !HAS_TTS || muted) {
+    # After:  if (!parts.length || !HAS_TTS || muted) {
+    fixed, n = re.subn(
+        r'const text = parts\.join\((["\'])  \1\);\s*\n(\s*)if \(!text \|\|',
+        r'\2if (!parts.length ||',
+        html_content,
+    )
+    if n == 0:
+        return html_content  # pattern not present — nothing to do
+
+    # Pattern 2: replace speakOne(text, function () with speakChain(parts, function ()
+    # Scoped to the exact call site in playWelcome.
+    fixed, _ = re.subn(
+        r'\bspeakOne\(text, function \(\)',
+        'speakChain(parts, function ()',
+        fixed,
+    )
+    return fixed
+
+
 # ─── Voice language patcher ──────────────────────────────────────────────────
 
 # Sentinel that both update_voice_language and inject_audio_clips embed, so

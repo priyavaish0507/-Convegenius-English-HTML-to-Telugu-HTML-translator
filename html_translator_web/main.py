@@ -12,7 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from translator import (extract_to_excel, load_translations_from_bytes,
                         apply_translations, walk_dom, strip_emoji,
                         extract_narr_records, apply_narr_translations,
-                        update_voice_language, inject_audio_clips)
+                        update_voice_language, inject_audio_clips,
+                        fix_play_welcome)
 from hf_translate import translate_batch
 from bs4 import BeautifulSoup
 
@@ -108,6 +109,7 @@ async def auto_translate(file: UploadFile = File(...)):
                 new_html, _, _ = apply_translations(html, ost_trans, ost_check)
                 if vo_trans:
                     new_html, _, _ = apply_narr_translations(new_html, vo_trans, vo_check)
+                new_html = fix_play_welcome(new_html)
                 new_html = update_voice_language(new_html)
 
                 job_id = str(uuid.uuid4())
@@ -172,6 +174,7 @@ async def apply(
             new_html, _, _ = apply_translations(html, ost_trans, ost_check)
             if vo_trans:
                 new_html, _, _ = apply_narr_translations(new_html, vo_trans, vo_check)
+            new_html = fix_play_welcome(new_html)
             new_html = update_voice_language(new_html)
 
             # TTS audio generation — sequential, one clip at a time, progress streamed
