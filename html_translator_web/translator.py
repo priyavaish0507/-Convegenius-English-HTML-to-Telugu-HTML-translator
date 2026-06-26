@@ -317,22 +317,23 @@ def fix_play_welcome(html_content: str) -> str:
     No-op if the pattern is absent (template already correct or different).
     """
     # Pattern 1: remove the join line and fix the empty-check condition.
-    # Before: const text = parts.join("  ");
-    #         if (!text || !HAS_TTS || muted) {
-    # After:  if (!parts.length || !HAS_TTS || muted) {
+    # Handles both pretty-printed (spaces around = / ||) and minified forms.
+    # Before: const text = parts.join("  ");\nif (!text ||   (pretty)
+    # Before: const text=parts.join('  ');\nif(!text||        (minified)
+    # After:  if(!parts.length||
     fixed, n = re.subn(
-        r'const text = parts\.join\((["\'])  \1\);\s*\n(\s*)if \(!text \|\|',
-        r'\2if (!parts.length ||',
+        r'const text\s*=\s*parts\.join\(["\']  ["\']\)\s*;[ \t]*\n[ \t]*if\s*\(\s*!text\s*\|\|',
+        'if(!parts.length||',
         html_content,
     )
     if n == 0:
         return html_content  # pattern not present — nothing to do
 
-    # Pattern 2: replace speakOne(text, function () with speakChain(parts, function ()
-    # Scoped to the exact call site in playWelcome.
+    # Pattern 2: replace speakOne(text, ...) with speakChain(parts, ...).
+    # Handles both pretty-printed and minified whitespace around ( ) and commas.
     fixed, _ = re.subn(
-        r'\bspeakOne\(text, function \(\)',
-        'speakChain(parts, function ()',
+        r'\bspeakOne\(\s*text\s*,\s*function\s*\(\s*\)\s*\{',
+        'speakChain(parts,function(){',
         fixed,
     )
     return fixed
