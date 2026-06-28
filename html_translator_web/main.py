@@ -34,6 +34,21 @@ _TTS_VOICE_ID = 'EMxdghWQV7gqV33j4J3F'
 _TTS_MODEL_ID = 'eleven_v3'
 _TTS_FORMAT   = 'mp3_44100_128'
 
+# Common Unicode punctuation → ASCII equivalents, then drop anything still outside latin-1.
+# Needed because HTTP Content-Disposition filenames must be latin-1 encodable.
+_UNICODE_TO_ASCII = str.maketrans({
+    '–': '-',   # en-dash  –
+    '—': '-',   # em-dash  —
+    '‘': "'",   # left single quote  '
+    '’': "'",   # right single quote '
+    '“': '"',   # left double quote  "
+    '”': '"',   # right double quote "
+    '…': '...',  # ellipsis …
+})
+
+def _safe_filename(name: str) -> str:
+    return name.translate(_UNICODE_TO_ASCII).encode('latin-1', errors='ignore').decode('latin-1')
+
 
 @app.post('/extract')
 async def extract(file: UploadFile = File(...)):
@@ -42,7 +57,7 @@ async def extract(file: UploadFile = File(...)):
         raise HTTPException(400, 'Please upload an .html file')
     html = (await file.read()).decode('utf-8', errors='replace')
     xlsx_bytes = extract_to_excel(html)
-    stem = Path(file.filename).stem
+    stem = _safe_filename(Path(file.filename).stem)
     return Response(
         content=xlsx_bytes,
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -56,7 +71,7 @@ async def auto_translate(file: UploadFile = File(...)):
     if not file.filename.endswith('.html'):
         raise HTTPException(400, 'Please upload an .html file')
     html = (await file.read()).decode('utf-8', errors='replace')
-    stem = Path(file.filename).stem
+    stem = _safe_filename(Path(file.filename).stem)
     out_filename = stem + '_Telugu.html'
 
     soup = BeautifulSoup(html, 'html.parser')
