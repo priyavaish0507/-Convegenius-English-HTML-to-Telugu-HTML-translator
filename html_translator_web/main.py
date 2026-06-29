@@ -168,7 +168,7 @@ async def apply(
 
     html         = (await html_file.read()).decode('utf-8', errors='replace')
     xlsx_bytes   = await excel_file.read()
-    stem         = Path(html_file.filename).stem
+    stem         = _safe_filename(Path(html_file.filename).stem)
     out_filename = stem + '_Telugu.html'
     tts_api_key  = tts_api_key.strip()
 
